@@ -2,6 +2,11 @@
 
 An interactive Streamlit application that simulates job interviews using OpenAI's GPT-4o model. Practice your interview skills with an AI HR executive tailored to your target position and company.
 
+## 📸 Preview
+
+![AI Interview Chatbot Interface](screenshots/setup.png)
+*Clean, intuitive interface for personalized interview practice*
+
 ## Features
 
 - 📝 **Personalized Setup**: Enter your name, experience, skills, position level, and target company
