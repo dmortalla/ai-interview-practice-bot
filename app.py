@@ -212,25 +212,37 @@ def update_usage_metrics(api_response):
         st.session_state.estimated_cost += (input_cost + output_cost)
 
 def authenticate_user():
-    """Check if user is authenticated for Streamlit Cloud deployment.
+    """Check if user is authenticated with password.
 
     Returns:
         bool: True if authenticated
     """
-    # For local development, always allow
-    try:
-        # Check if running on Streamlit Cloud
-        if hasattr(st, 'experimental_user'):
-            user = st.experimental_user
-            if user and user.email:
-                st.session_state.authenticated = True
-                return True
-    except (AttributeError, RuntimeError):
-        pass
+    # Check if already authenticated in session
+    if st.session_state.get('authenticated', False):
+        return True
 
-    # For local development or if experimental_user not available
-    st.session_state.authenticated = True
-    return True
+    # Check if password is configured in secrets
+    if 'APP_PASSWORD' not in st.secrets:
+        # No password set - allow access (for local development)
+        st.session_state.authenticated = True
+        return True
+
+    # Show password input form
+    st.markdown("## 🔒 Access Required")
+    st.info("This application is password-protected. Please enter the access code.")
+
+    password = st.text_input("Access Code:", type="password", key="auth_password")
+
+    if st.button("Access App", key="auth_button"):
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state.authenticated = True
+            st.success("✅ Access granted!")
+            st.rerun()
+        else:
+            st.error("❌ Incorrect access code")
+            return False
+
+    return False
 
 # Define functions for setup completion and feedback display
 def complete_setup():
