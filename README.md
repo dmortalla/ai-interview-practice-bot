@@ -17,6 +17,15 @@ An interactive Streamlit application that simulates job interviews using OpenAI'
 - 📥 **Export Options**: Download conversations as TXT or JSON files
 - 🔄 **Session Persistence**: Resume previous interviews anytime
 
+## 🔒 Security Features
+
+- **Input Validation**: Sanitizes all user inputs and blocks prompt injection attempts
+- **Rate Limiting**: 3-second cooldown between API requests to prevent abuse
+- **Usage Quotas**: Maximum 10 interviews and 50,000 tokens per session
+- **Cost Monitoring**: Real-time tracking of API usage and estimated costs
+- **Authentication Ready**: Built-in support for Streamlit Cloud authentication
+- **Secure Configuration**: API keys stored in protected secrets.toml file
+
 ## Installation
 
 ### Prerequisites
@@ -99,6 +108,18 @@ An interactive Streamlit application that simulates job interviews using OpenAI'
 ```
 
 ## Configuration
+
+### Security Settings (in app.py)
+
+Adjust these constants to customize security and usage limits:
+
+```python
+MAX_INTERVIEWS_PER_USER = 10        # Maximum interviews per session
+REQUEST_COOLDOWN_SECONDS = 3        # Seconds between API requests
+MAX_TOTAL_TOKENS = 50000           # Maximum tokens per session
+GPT4_COST_PER_1K_INPUT = 0.03      # Cost tracking (USD)
+GPT4_COST_PER_1K_OUTPUT = 0.06     # Cost tracking (USD)
+```
 
 ### Supported Positions
 - Data Scientist

@@ -9,14 +9,23 @@ To run this app:
 # Import necessary libraries
 import json  # For saving/loading conversation data
 import os  # For file system operations
-from datetime import datetime  # For timestamping saved conversations
+from datetime import datetime, timedelta  # For timestamping and rate limiting
 from pathlib import Path  # For cross-platform file path handling
+import re  # For input validation
 from openai import OpenAI
 import streamlit as st
 from streamlit_js_eval import streamlit_js_eval  # For page reload functionality
 
 # Set up the Streamlit app configuration
 st.set_page_config(page_title="Streamlit Chat", page_icon=":speech_balloon:", layout="wide")
+
+# Security and usage configuration
+MAX_INTERVIEWS_PER_USER = 10  # Maximum interviews per user session
+REQUEST_COOLDOWN_SECONDS = 3  # Minimum seconds between API requests
+MAX_TOTAL_TOKENS = 50000  # Maximum tokens per user session
+GPT4_COST_PER_1K_INPUT = 0.03  # Cost in USD per 1K input tokens
+GPT4_COST_PER_1K_OUTPUT = 0.06  # Cost in USD per 1K output tokens
+
 st.title("Chatbot")
 
 # Create directory for saved conversations
@@ -35,6 +44,18 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chat_complete" not in st.session_state:
     st.session_state.chat_complete = False
+
+# Security and usage tracking variables
+if "last_request_time" not in st.session_state:
+    st.session_state.last_request_time = datetime.now() - timedelta(seconds=10)
+if "total_interviews" not in st.session_state:
+    st.session_state.total_interviews = 0
+if "total_tokens_used" not in st.session_state:
+    st.session_state.total_tokens_used = 0
+if "estimated_cost" not in st.session_state:
+    st.session_state.estimated_cost = 0.0
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
 # Define functions for saving and loading conversations
 def save_conversation(conv_data, filename=None):
@@ -113,6 +134,104 @@ def format_conversation_for_export():
 
     return "\n".join(output)
 
+# Security and validation functions
+def validate_input(text, max_length=1000):
+    """Validate and sanitize user input.
+
+    Args:
+        text: Input text to validate
+        max_length: Maximum allowed length
+
+    Returns:
+        Tuple of (is_valid, sanitized_text, error_message)
+    """
+    if not text or not text.strip():
+        return False, "", "Input cannot be empty"
+
+    # Check length
+    if len(text) > max_length:
+        return False, "", f"Input too long (max {max_length} characters)"
+
+    # Basic sanitization - remove potential prompt injection patterns
+    suspicious_patterns = [
+        r"ignore\s+(previous|all|above)\s+instructions?",
+        r"system\s*:",
+        r"assistant\s*:",
+        r"<\|.*?\|>",
+    ]
+
+    text_lower = text.lower()
+    for pattern in suspicious_patterns:
+        if re.search(pattern, text_lower):
+            return False, "", "Input contains suspicious content"
+
+    return True, text.strip(), ""
+
+def check_rate_limit():
+    """Check if user is within rate limits.
+
+    Returns:
+        Tuple of (is_allowed, wait_time_seconds)
+    """
+    time_since_last = datetime.now() - st.session_state.last_request_time
+    remaining_wait = REQUEST_COOLDOWN_SECONDS - time_since_last.total_seconds()
+
+    if remaining_wait > 0:
+        return False, remaining_wait
+    return True, 0
+
+def check_usage_quota():
+    """Check if user has exceeded usage quotas.
+
+    Returns:
+        Tuple of (is_allowed, reason)
+    """
+    if st.session_state.total_interviews >= MAX_INTERVIEWS_PER_USER:
+        return False, f"Maximum interviews ({MAX_INTERVIEWS_PER_USER}) reached"
+
+    if st.session_state.total_tokens_used >= MAX_TOTAL_TOKENS:
+        return False, f"Token limit ({MAX_TOTAL_TOKENS}) reached"
+
+    return True, ""
+
+def update_usage_metrics(api_response):
+    """Update token usage and cost tracking.
+
+    Args:
+        api_response: OpenAI API response object
+    """
+    if hasattr(api_response, 'usage'):
+        input_tokens = api_response.usage.prompt_tokens
+        output_tokens = api_response.usage.completion_tokens
+
+        st.session_state.total_tokens_used += (input_tokens + output_tokens)
+
+        # Calculate cost
+        input_cost = (input_tokens / 1000) * GPT4_COST_PER_1K_INPUT
+        output_cost = (output_tokens / 1000) * GPT4_COST_PER_1K_OUTPUT
+        st.session_state.estimated_cost += (input_cost + output_cost)
+
+def authenticate_user():
+    """Check if user is authenticated for Streamlit Cloud deployment.
+
+    Returns:
+        bool: True if authenticated
+    """
+    # For local development, always allow
+    try:
+        # Check if running on Streamlit Cloud
+        if hasattr(st, 'experimental_user'):
+            user = st.experimental_user
+            if user and user.email:
+                st.session_state.authenticated = True
+                return True
+    except (AttributeError, RuntimeError):
+        pass
+
+    # For local development or if experimental_user not available
+    st.session_state.authenticated = True
+    return True
+
 # Define functions for setup completion and feedback display
 def complete_setup():
     """
@@ -141,8 +260,31 @@ def show_feedback():
     """
     st.session_state.feedback_shown = True
 
+# Authentication check
+if not authenticate_user():
+    st.error("🔒 Authentication required to use this application")
+    st.info("This app is restricted to authorized users only.")
+    st.stop()
+
 # Sidebar for viewing past conversations and exporting current chat
 with st.sidebar:
+    # Usage statistics at the top
+    st.header("📊 Usage Statistics")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Interviews", f"{st.session_state.total_interviews}/{MAX_INTERVIEWS_PER_USER}")
+    with col2:
+        st.metric("Est. Cost", f"${st.session_state.estimated_cost:.4f}")
+
+    st.metric("Tokens Used", f"{st.session_state.total_tokens_used:,}/{MAX_TOTAL_TOKENS:,}")
+
+    # Show quota warnings
+    quota_allowed, quota_reason = check_usage_quota()
+    if not quota_allowed:
+        st.error(f"⚠️ {quota_reason}")
+
+    st.divider()
+
     st.header("📚 Past Conversations")
 
     # Get list of all saved conversation files
@@ -296,8 +438,31 @@ if not st.session_state.setup_complete:
     st.write(f"**Your information**: {st.session_state['level']} {st.session_state['position']} "
              f"at {st.session_state['company']}")
 
+    # Validate inputs before allowing to start
+    validation_errors = []
+    if not st.session_state["name"].strip():
+        validation_errors.append("Name is required")
+    if not st.session_state["experience"].strip():
+        validation_errors.append("Experience is required")
+    if not st.session_state["skills"].strip():
+        validation_errors.append("Skills are required")
+
+    # Check usage quota before starting
+    quota_allowed, quota_reason = check_usage_quota()
+    if not quota_allowed:
+        st.error(f"⚠️ {quota_reason}")
+        st.info("Please contact support to increase your quota.")
+        st.stop()
+
+    if validation_errors:
+        st.warning("Please fill in all required fields before starting")
+        for error in validation_errors:
+            st.write(f"• {error}")
+
     # Button to complete setup
-    if st.button("Start Interview", on_click=complete_setup):
+    if st.button("Start Interview", on_click=complete_setup, disabled=bool(validation_errors)):
+        # Increment interview counter
+        st.session_state.total_interviews += 1
         st.write("Setup complete! Starting interview...")
 
 # Chat interface after setup is complete, but not yet showing feedback nor completed chat
@@ -338,23 +503,47 @@ if (st.session_state.setup_complete and not st.session_state.feedback_shown
     # Accept user input and generate assistant response if messages under limit of 5
     if st.session_state.user_message_count < 5:
         if prompt := st.chat_input("Your answer.", max_chars=1000):
-            st.session_state.messages.append({"role": "user", "content": prompt})
+            # Validate input
+            is_valid, sanitized_prompt, error_msg = validate_input(prompt, max_length=1000)
+            if not is_valid:
+                st.error(f"❌ Invalid input: {error_msg}")
+                st.stop()
+
+            # Check rate limit
+            rate_allowed, wait_time = check_rate_limit()
+            if not rate_allowed:
+                st.warning(f"⏱️ Please wait {wait_time:.1f} seconds before sending another message")
+                st.stop()
+
+            # Update last request time
+            st.session_state.last_request_time = datetime.now()
+
+            st.session_state.messages.append({"role": "user", "content": sanitized_prompt})
 
             with st.chat_message("user"):
-                st.markdown(prompt)
+                st.markdown(sanitized_prompt)
 
             if st.session_state.user_message_count < 4:
                 with st.chat_message("assistant"):
-                    stream = client.chat.completions.create(
+                    # Non-streaming call to track token usage
+                    response = client.chat.completions.create(
                         model=st.session_state["openai_model"],
                         messages=[
                             {"role": m["role"], "content": m["content"]}
                             for m in st.session_state.messages
                         ],
-                        stream=True,
+                        stream=False,
                     )
-                    response = st.write_stream(stream)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                    assistant_message = response.choices[0].message.content
+                    st.write(assistant_message)
+
+                    # Update usage metrics
+                    update_usage_metrics(response)
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": assistant_message
+                })
 
             st.session_state.user_message_count += 1
 
@@ -414,6 +603,9 @@ if st.session_state.feedback_shown:
     # Display the AI-generated feedback
     feedback_text = feedback_completion.choices[0].message.content
     st.write(feedback_text)
+
+    # Update usage metrics for feedback request
+    update_usage_metrics(feedback_completion)
 
     # Save feedback to session state and persist to file
     if "feedback_text" not in st.session_state:
